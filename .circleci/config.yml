@@ -35,9 +35,28 @@ jobs:
             docker tag $DOCKER_IMAGE $DOCKER_IMAGE:$VERSION
             docker login -u $DOCKER_HUB_LOGIN -p $DOCKER_HUB_PASSWORD
             docker push $DOCKER_IMAGE
+  scan:
+    docker:
+      - image: docker:18.09.1-git
+    environment:
+      DOCKER_IMAGE: dgoeke/clair-poc
+    working_directory: /tmp
+    steps:
+      - setup_remote_docker
+      - run:
+          name: Scanning image
+          command: |
+            docker network create scanning
+            docker run -p 5432:5432 -d --net=scanning --name db arminc/clair-db:latest
+            docker run -p 6060:6060  --net=scanning --link db:postgres -d --name clair arminc/clair-local-scan:v2.0.6
+            docker run --net=scanning --rm --name=scanner --link=clair:clair -v '/var/run/docker.sock:/var/run/docker.sock'  objectiflibre/clair-scanner --clair="http://clair:6060" --ip="scanner" -t Medium $DOCKER_IMAGE
 
 workflows:
   version: 2
   workflow:
     jobs:
-      - build
+      - scan
+      # - build
+      # - scan:
+      #     requires:
+      #       - build
