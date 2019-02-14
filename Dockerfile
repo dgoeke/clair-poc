@@ -1,1 +1,1 @@
-FROM docker/whalesay:latest
+FROM nginx:latest
