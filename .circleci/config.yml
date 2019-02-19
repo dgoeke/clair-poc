@@ -1,7 +1,7 @@
 version: 2
 
 jobs:
-  vulnerability_scan:
+  build_image:
     docker:
       - image: docker:18.09.1-git
     environment:
@@ -13,6 +13,31 @@ jobs:
       - run:
           name: Building application Docker image
           command: docker build -t $DOCKER_IMAGE .
+      - run:
+          name: Save image to an archive
+          command: |
+            mkdir docker-image
+            docker save -o docker-image/image.tar $DOCKER_IMAGE
+      - persist_to_workspace:
+          root: .
+          paths:
+            - docker-image
+
+  vulnerability_scan:
+    docker:
+      - image: docker:18.09.1-git
+    environment:
+      DOCKER_IMAGE: dgoeke/clair-poc
+    working_directory: /app
+    steps:
+      - checkout
+      - setup_remote_docker
+      - attach_workspace:
+          at: workspace
+      - run:
+          name: Load image
+          command: |
+            docker load --input workspace/docker-image/image.tar
       - run:
           name: Scanning application Docker image
           command: |
@@ -30,9 +55,12 @@ jobs:
     steps:
       - checkout
       - setup_remote_docker
+      - attach_workspace:
+          at: workspace
       - run:
-          name: Building application Docker image
-          command: docker build -t $DOCKER_IMAGE .
+          name: Load image
+          command: |
+            docker load --input workspace/docker-image/image.tar
       - run:
           name: Build scanner image with custom InSpec profiles
           command: docker build -t my-inspec ./inspec
@@ -42,9 +70,45 @@ jobs:
             docker run --detach --name app $DOCKER_IMAGE
             docker run --name=scanner -v '/var/run/docker.sock:/var/run/docker.sock' my-inspec exec profiles/sample -t docker://app
 
+  publish_image:
+    docker:
+      - image: circleci/python:3.6.1
+    environment:
+      AWS_DEFAULT_OUTPUT: json
+      ECR_REPOSITORY_NAME: testapp
+    steps:
+      - checkout
+      - setup_remote_docker
+      - attach_workspace:
+          at: workspace
+      - run:
+          name: Install AWS CLI
+          command: |
+            python3 -m venv venv
+            . venv/bin/activate
+            pip3 install awscli
+      - run:
+          name: Load image
+          command: |
+            docker load --input workspace/docker-image/image.tar
+      - run:
+          name: Push image to ECR
+          command: |
+            . venv/bin/activate
+            eval $(aws ecr get-login --region $AWS_DEFAULT_REGION --no-include-email)
+            docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$ECR_REPOSITORY_NAME:$CIRCLE_SHA1
+
 workflows:
   version: 2
   workflow:
     jobs:
-      - vulnerability_scan
-      - compliance_scan
+      - build_image
+      - vulnerability_scan:
+          requires:
+            - build_image
+      - compliance_scan:
+          requires:
+            - build_image
+      - publish_image:  # TODO requires: vulnerability & compliance, filters:branches:only:master
+          requires:
+            - build_image
